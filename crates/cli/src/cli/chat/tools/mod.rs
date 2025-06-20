@@ -447,3 +447,6 @@ mod tests {
 #[cfg(test)]
 mod trusted_commands_integration_tests;
 
+#[cfg(test)]
+mod trusted_commands_display_tests;
+
