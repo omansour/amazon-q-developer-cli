@@ -3018,7 +3018,8 @@ impl ChatContext {
             // If there is an override, we will use it. Otherwise fall back to Tool's default.
             let allowed = self.tool_permissions.trust_all
                 || (self.tool_permissions.has(&tool.name) && self.tool_permissions.is_trusted(&tool.name))
-                || !tool.tool.requires_acceptance(&self.ctx);
+                || !tool.tool.requires_acceptance(&self.ctx)
+                || tool.tool.check_trusted(&self.ctx).await;
 
             if database
                 .settings
