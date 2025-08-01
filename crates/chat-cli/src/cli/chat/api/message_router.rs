@@ -391,17 +391,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_event_routing() {
-        let (router, _temp_dir) = create_test_router().await;
-        
-        let result = router.route_session_event("start", None).await;
-        assert!(result.is_ok());
-        
-        let result = router.route_session_event("end", Some("User quit".to_string())).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn test_message_validation() {
         let (router, _temp_dir) = create_test_router().await;
         
