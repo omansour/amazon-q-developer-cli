@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::path::{
+    PathBuf,
+    StripPrefixError,
+};
 
 use thiserror::Error;
 
@@ -23,9 +26,14 @@ pub enum DirectoryError {
     FromVecWithNul(#[from] std::ffi::FromVecWithNulError),
     #[error(transparent)]
     IntoString(#[from] std::ffi::IntoStringError),
+    #[error(transparent)]
+    StripPrefix(#[from] StripPrefixError),
 }
 
 type Result<T, E = DirectoryError> = std::result::Result<T, E>;
+
+const WORKSPACE_AGENT_DIR_RELATIVE: &str = ".amazonq/cli-agents";
+const GLOBAL_AGENT_DIR_RELATIVE_TO_HOME: &str = ".aws/amazonq/cli-agents";
 
 /// The directory of the users home
 ///
@@ -142,23 +150,22 @@ pub fn chat_legacy_mcp_config(os: &Os) -> Result<PathBuf> {
 
 /// The directory to the directory containing global agents
 pub fn chat_global_agent_path(os: &Os) -> Result<PathBuf> {
-    Ok(home_dir(os)?.join(agent_config_dir()))
+    Ok(home_dir(os)?.join(GLOBAL_AGENT_DIR_RELATIVE_TO_HOME))
 }
 
 /// The directory to the directory containing config for the `/context` feature in `q chat`.
-pub fn chat_local_agent_dir() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    Ok(cwd.join(agent_config_dir()))
+pub fn chat_local_agent_dir(os: &Os) -> Result<PathBuf> {
+    let cwd = os.env.current_dir()?;
+    Ok(cwd.join(WORKSPACE_AGENT_DIR_RELATIVE))
 }
 
-/// The relative path to the agent configuration directory
+/// Derives the absolute path to an agent config directory given a "workspace directory".
+/// A workspace directory is a directory where q chat is to be launched
 ///
-/// This directory contains agent configuration files for Amazon Q.
-/// The path is relative and should be joined with either the home directory
-/// for global agents or the current working directory for local agents.
-// TODO [dingfeli]: implement Brandon's suggestion: https://github.com/aws/amazon-q-developer-cli/pull/2307#discussion_r2207989985
-pub fn agent_config_dir() -> PathBuf {
-    PathBuf::from(".aws/amazonq/agents")
+/// For example, if the given path is /path/one, then the derived config path would be
+/// `/path/one/.amazonq/agents`
+pub fn agent_config_dir(workspace_dir: PathBuf) -> Result<PathBuf> {
+    Ok(workspace_dir.join(WORKSPACE_AGENT_DIR_RELATIVE))
 }
 
 /// The directory to the directory containing config for the `/context` feature in `q chat`.

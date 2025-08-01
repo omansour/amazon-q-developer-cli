@@ -4,7 +4,12 @@ pub mod definitions;
 pub mod endpoint;
 mod install_method;
 
-use core::ToolUseEventBuilder;
+use core::{
+    AgentConfigInitArgs,
+    ChatAddedMessageParams,
+    RecordUserTurnCompletionArgs,
+    ToolUseEventBuilder,
+};
 use std::str::FromStr;
 
 use amzn_codewhisperer_client::types::{
@@ -257,28 +262,32 @@ impl TelemetryThread {
         &self,
         database: &Database,
         conversation_id: String,
-        message_id: Option<String>,
-        request_id: Option<String>,
-        context_file_length: Option<usize>,
         result: TelemetryResult,
-        reason: Option<String>,
-        reason_desc: Option<String>,
-        status_code: Option<u16>,
-        model: Option<String>,
+        data: ChatAddedMessageParams,
     ) -> Result<(), TelemetryError> {
         let mut event = Event::new(EventType::ChatAddedMessage {
             conversation_id,
-            message_id,
-            request_id,
-            context_file_length,
             result,
-            reason,
-            reason_desc,
-            status_code,
-            model,
+            data,
         });
         set_start_url_and_region(database, &mut event).await;
 
+        Ok(self.tx.send(event)?)
+    }
+
+    pub async fn send_record_user_turn_completion(
+        &self,
+        database: &Database,
+        conversation_id: String,
+        result: TelemetryResult,
+        args: RecordUserTurnCompletionArgs,
+    ) -> Result<(), TelemetryError> {
+        let mut event = Event::new(EventType::RecordUserTurnCompletion {
+            conversation_id,
+            result,
+            args,
+        });
+        set_start_url_and_region(database, &mut event).await;
         Ok(self.tx.send(event)?)
     }
 
@@ -290,27 +299,47 @@ impl TelemetryThread {
             tool_use_id: event.tool_use_id,
             tool_name: event.tool_name,
             is_accepted: event.is_accepted,
+            is_trusted: event.is_trusted,
             is_success: event.is_success,
+            reason_desc: event.reason_desc,
             is_valid: event.is_valid,
             is_custom_tool: event.is_custom_tool,
             input_token_size: event.input_token_size,
             output_token_size: event.output_token_size,
             custom_tool_call_latency: event.custom_tool_call_latency,
             model: event.model,
+            execution_duration: event.execution_duration,
+            turn_duration: event.turn_duration,
         }))?)
     }
 
-    pub fn send_mcp_server_init(
+    pub async fn send_mcp_server_init(
         &self,
+        database: &Database,
         conversation_id: String,
+        server_name: String,
         init_failure_reason: Option<String>,
         number_of_tools: usize,
     ) -> Result<(), TelemetryError> {
-        Ok(self.tx.send(Event::new(crate::telemetry::EventType::McpServerInit {
+        let mut event = Event::new(crate::telemetry::EventType::McpServerInit {
             conversation_id,
+            server_name,
             init_failure_reason,
             number_of_tools,
-        }))?)
+        });
+        set_start_url_and_region(database, &mut event).await;
+        Ok(self.tx.send(event)?)
+    }
+
+    pub async fn send_agent_config_init(
+        &self,
+        database: &Database,
+        conversation_id: String,
+        args: AgentConfigInitArgs,
+    ) -> Result<(), TelemetryError> {
+        let mut event = Event::new(crate::telemetry::EventType::AgentConfigInit { conversation_id, args });
+        set_start_url_and_region(database, &mut event).await;
+        Ok(self.tx.send(event)?)
     }
 
     pub fn send_did_select_profile(
@@ -355,6 +384,8 @@ impl TelemetryThread {
         reason: Option<String>,
         reason_desc: Option<String>,
         status_code: Option<u16>,
+        request_id: Option<String>,
+        message_id: Option<String>,
     ) -> Result<(), TelemetryError> {
         let mut event = Event::new(EventType::MessageResponseError {
             result,
@@ -363,6 +394,8 @@ impl TelemetryThread {
             status_code,
             conversation_id,
             context_file_length,
+            request_id,
+            message_id,
         });
         set_start_url_and_region(database, &mut event).await;
 
@@ -473,8 +506,15 @@ impl TelemetryClient {
 
         if let EventType::ChatAddedMessage {
             conversation_id,
-            message_id,
-            model,
+            data:
+                ChatAddedMessageParams {
+                    message_id,
+                    model,
+                    time_to_first_chunk_ms,
+                    time_between_chunks_ms,
+                    assistant_response_length,
+                    ..
+                },
             ..
         } = &event.ty
         {
@@ -483,6 +523,9 @@ impl TelemetryClient {
             let chat_add_message_event = match ChatAddMessageEvent::builder()
                 .conversation_id(conversation_id)
                 .message_id(message_id.clone().unwrap_or("not_set".to_string()))
+                .set_time_to_first_chunk_milliseconds(*time_to_first_chunk_ms)
+                .set_time_between_chunks(time_between_chunks_ms.clone())
+                .set_response_length(*assistant_response_length)
                 .build()
             {
                 Ok(event) => event,
@@ -653,14 +696,12 @@ mod test {
             .send_chat_added_message(
                 &database,
                 "conv_id".to_owned(),
-                Some("message_id".to_owned()),
-                Some("req_id".to_owned()),
-                Some(123),
                 TelemetryResult::Succeeded,
-                None,
-                None,
-                None,
-                None,
+                ChatAddedMessageParams {
+                    message_id: Some("message_id".to_owned()),
+                    context_file_length: Some(123),
+                    ..Default::default()
+                },
             )
             .await
             .ok();

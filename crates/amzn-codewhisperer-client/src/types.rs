@@ -7,6 +7,8 @@ pub use crate::types::_application_properties::ApplicationProperties;
 pub use crate::types::_artifact_type::ArtifactType;
 pub use crate::types::_assistant_response_message::AssistantResponseMessage;
 pub use crate::types::_by_user_analytics::ByUserAnalytics;
+pub use crate::types::_cache_point::CachePoint;
+pub use crate::types::_cache_point_type::CachePointType;
 pub use crate::types::_change_log_granularity_type::ChangeLogGranularityType;
 pub use crate::types::_change_log_options::ChangeLogOptions;
 pub use crate::types::_chat_add_message_event::ChatAddMessageEvent;
@@ -15,6 +17,7 @@ pub use crate::types::_chat_message::ChatMessage;
 pub use crate::types::_chat_message_interaction_type::ChatMessageInteractionType;
 pub use crate::types::_chat_trigger_type::ChatTriggerType;
 pub use crate::types::_chat_user_modification_event::ChatUserModificationEvent;
+pub use crate::types::_client_cache_config::ClientCacheConfig;
 pub use crate::types::_code_analysis_findings_schema::CodeAnalysisFindingsSchema;
 pub use crate::types::_code_analysis_scope::CodeAnalysisScope;
 pub use crate::types::_code_analysis_status::CodeAnalysisStatus;
@@ -42,6 +45,7 @@ pub use crate::types::_content_checksum_type::ContentChecksumType;
 pub use crate::types::_content_type::ContentType;
 pub use crate::types::_context_truncation_scheme::ContextTruncationScheme;
 pub use crate::types::_conversation_state::ConversationState;
+pub use crate::types::_currency::Currency;
 pub use crate::types::_cursor_state::CursorState;
 pub use crate::types::_customization::Customization;
 pub use crate::types::_dashboard_analytics::DashboardAnalytics;
@@ -73,6 +77,8 @@ pub use crate::types::_feature_evaluation::FeatureEvaluation;
 pub use crate::types::_feature_value::FeatureValue;
 pub use crate::types::_file_context::FileContext;
 pub use crate::types::_followup_prompt::FollowupPrompt;
+pub use crate::types::_free_trial_info::FreeTrialInfo;
+pub use crate::types::_free_trial_status::FreeTrialStatus;
 pub use crate::types::_functionality_name::FunctionalityName;
 pub use crate::types::_git_state::GitState;
 pub use crate::types::_ide_category::IdeCategory;
@@ -109,6 +115,7 @@ pub use crate::types::_position::Position;
 pub use crate::types::_prediction::Prediction;
 pub use crate::types::_prediction_type::PredictionType;
 pub use crate::types::_previous_editor_state_metadata::PreviousEditorStateMetadata;
+pub use crate::types::_pricing_info::PricingInfo;
 pub use crate::types::_profile::Profile;
 pub use crate::types::_profile_info::ProfileInfo;
 pub use crate::types::_profile_status::ProfileStatus;
@@ -131,6 +138,10 @@ pub use crate::types::_shell_state::ShellState;
 pub use crate::types::_span::Span;
 pub use crate::types::_sso_identity_details::SsoIdentityDetails;
 pub use crate::types::_subscription_info::SubscriptionInfo;
+pub use crate::types::_subscription_name::SubscriptionName;
+pub use crate::types::_subscription_plan::SubscriptionPlan;
+pub use crate::types::_subscription_plan_description::SubscriptionPlanDescription;
+pub use crate::types::_subscription_provider::SubscriptionProvider;
 pub use crate::types::_subscription_status::SubscriptionStatus;
 pub use crate::types::_subscription_type::SubscriptionType;
 pub use crate::types::_suggested_fix::SuggestedFix;
@@ -189,10 +200,12 @@ pub use crate::types::_transformation_upload_context::TransformationUploadContex
 pub use crate::types::_transformation_user_action_status::TransformationUserActionStatus;
 pub use crate::types::_upload_context::UploadContext;
 pub use crate::types::_upload_intent::UploadIntent;
+pub use crate::types::_usage_breakdown::UsageBreakdown;
 pub use crate::types::_usage_limit_list::UsageLimitList;
 pub use crate::types::_usage_limit_type::UsageLimitType;
 pub use crate::types::_usage_limit_update_request_status::UsageLimitUpdateRequestStatus;
 pub use crate::types::_user_context::UserContext;
+pub use crate::types::_user_info::UserInfo;
 pub use crate::types::_user_input_message::UserInputMessage;
 pub use crate::types::_user_input_message_context::UserInputMessageContext;
 pub use crate::types::_user_intent::UserIntent;
@@ -222,6 +235,10 @@ mod _assistant_response_message;
 
 mod _by_user_analytics;
 
+mod _cache_point;
+
+mod _cache_point_type;
+
 mod _change_log_granularity_type;
 
 mod _change_log_options;
@@ -237,6 +254,8 @@ mod _chat_message_interaction_type;
 mod _chat_trigger_type;
 
 mod _chat_user_modification_event;
+
+mod _client_cache_config;
 
 mod _code_analysis_findings_schema;
 
@@ -291,6 +310,8 @@ mod _content_type;
 mod _context_truncation_scheme;
 
 mod _conversation_state;
+
+mod _currency;
 
 mod _cursor_state;
 
@@ -353,6 +374,10 @@ mod _feature_value;
 mod _file_context;
 
 mod _followup_prompt;
+
+mod _free_trial_info;
+
+mod _free_trial_status;
 
 mod _functionality_name;
 
@@ -426,6 +451,8 @@ mod _prediction_type;
 
 mod _previous_editor_state_metadata;
 
+mod _pricing_info;
+
 mod _profile;
 
 mod _profile_info;
@@ -469,6 +496,14 @@ mod _span;
 mod _sso_identity_details;
 
 mod _subscription_info;
+
+mod _subscription_name;
+
+mod _subscription_plan;
+
+mod _subscription_plan_description;
+
+mod _subscription_provider;
 
 mod _subscription_status;
 
@@ -586,6 +621,8 @@ mod _upload_context;
 
 mod _upload_intent;
 
+mod _usage_breakdown;
+
 mod _usage_limit_list;
 
 mod _usage_limit_type;
@@ -593,6 +630,8 @@ mod _usage_limit_type;
 mod _usage_limit_update_request_status;
 
 mod _user_context;
+
+mod _user_info;
 
 mod _user_input_message;
 

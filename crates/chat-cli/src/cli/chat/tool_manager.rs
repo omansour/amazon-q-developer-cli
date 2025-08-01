@@ -63,6 +63,7 @@ use crate::cli::agent::{
     McpServerConfig,
 };
 use crate::cli::chat::cli::prompts::GetPromptError;
+use crate::cli::chat::consts::DUMMY_TOOL_NAME;
 use crate::cli::chat::message::AssistantToolUse;
 use crate::cli::chat::server_messenger::{
     ServerMessengerBuilder,
@@ -84,6 +85,7 @@ use crate::cli::chat::tools::{
     ToolOrigin,
     ToolSpec,
 };
+use crate::database::Database;
 use crate::database::settings::Setting;
 use crate::mcp_client::{
     JsonRpcResponse,
@@ -372,6 +374,7 @@ impl ToolManagerBuilder {
         let load_record_clone = load_record.clone();
         let agent = Arc::new(Mutex::new(self.agent.unwrap_or_default()));
         let agent_clone = agent.clone();
+        let database = os.database.clone();
 
         tokio::spawn(async move {
             let mut record_temp_buf = Vec::<u8>::new();
@@ -464,6 +467,7 @@ impl ToolManagerBuilder {
                                     .collect::<Vec<_>>();
                                 let mut sanitized_mapping = HashMap::<ModelToolName, ToolInfo>::new();
                                 let process_result = process_tool_specs(
+                                    &database,
                                     conv_id_clone.as_str(),
                                     &server_name,
                                     &mut specs,
@@ -471,7 +475,8 @@ impl ToolManagerBuilder {
                                     &alias_list,
                                     &regex,
                                     &telemetry_clone,
-                                );
+                                )
+                                .await;
                                 if let Some(sender) = &loading_status_sender_clone {
                                     // Anomalies here are not considered fatal, thus we shall give
                                     // warnings.
@@ -611,7 +616,8 @@ impl ToolManagerBuilder {
                 Err(e) => {
                     error!("Error initializing mcp client for server {}: {:?}", name, &e);
                     os.telemetry
-                        .send_mcp_server_init(conversation_id.clone(), Some(e.to_string()), 0)
+                        .send_mcp_server_init(&os.database, conversation_id.clone(), name, Some(e.to_string()), 0)
+                        .await
                         .ok();
                     let _ = messenger.send_tools_list_result(Err(e)).await;
                 },
@@ -891,7 +897,8 @@ impl ToolManager {
                 serde_json::from_str::<HashMap<String, ToolSpec>>(include_str!("tools/tool_index.json"))?
                     .into_iter()
                     .filter(|(name, _)| {
-                        is_allow_all
+                        name == DUMMY_TOOL_NAME
+                            || is_allow_all
                             || is_allow_native
                             || tool_list.contains(name)
                             || tool_list.contains(&format!("@builtin/{name}"))
@@ -1348,8 +1355,9 @@ impl ToolManager {
     }
 }
 
-#[inline]
-fn process_tool_specs(
+#[allow(clippy::too_many_arguments)]
+async fn process_tool_specs(
+    database: &Database,
     conversation_id: &str,
     server_name: &str,
     specs: &mut Vec<ToolSpec>,
@@ -1401,7 +1409,15 @@ fn process_tool_specs(
     specs.retain(|spec| !matches!(spec.tool_origin, ToolOrigin::Native));
     // Send server load success metric datum
     let conversation_id = conversation_id.to_string();
-    let _ = telemetry.send_mcp_server_init(conversation_id, None, number_of_tools);
+    let _ = telemetry
+        .send_mcp_server_init(
+            database,
+            conversation_id,
+            server_name.to_string(),
+            None,
+            number_of_tools,
+        )
+        .await;
     // Tool name translation. This is beyond of the scope of what is
     // considered a "server load". Reasoning being:
     // - Failures here are not related to server load

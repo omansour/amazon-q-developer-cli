@@ -26,13 +26,13 @@ use crate::cli::agent::{
     Agent,
     Agents,
     create_agent,
-    rename_agent,
 };
 use crate::cli::chat::{
     ChatError,
     ChatSession,
     ChatState,
 };
+use crate::database::settings::Setting;
 use crate::os::Os;
 use crate::util::directories::chat_global_agent_path;
 
@@ -70,18 +70,13 @@ pub enum AgentSubcommand {
     /// Switch to the specified agent
     #[command(hide = true)]
     Set { name: String },
-    /// Rename an agent. Should this be the current active agent, its changes will take effect upon
-    /// next launch
-    Rename {
-        /// Original name of the agent
-        #[arg(long, short)]
-        agent: String,
-        /// New name the agent shall be changed to
-        #[arg(long, short)]
-        new_name: String,
-    },
     /// Show agent config schema
     Schema,
+    /// Define a default agent to use when q chat launches
+    SetDefault {
+        #[arg(long, short)]
+        name: String,
+    },
 }
 
 impl AgentSubcommand {
@@ -133,7 +128,7 @@ impl AgentSubcommand {
                     .map_err(|e| ChatError::Custom(format!("Error printing agent schema: {e}").into()))?;
             },
             Self::Create { name, directory, from } => {
-                let mut agents = Agents::load(os, None, true, &mut session.stderr).await;
+                let mut agents = Agents::load(os, None, true, &mut session.stderr).await.0;
                 let path_with_file_name = create_agent(os, &mut agents, name.clone(), directory, from)
                     .await
                     .map_err(|e| ChatError::Custom(Cow::Owned(e.to_string())))?;
@@ -145,20 +140,26 @@ impl AgentSubcommand {
                     return Err(ChatError::Custom("Editor process did not exit with success".into()));
                 }
 
-                let Ok(content) = os.fs.read(&path_with_file_name).await else {
-                    return Err(ChatError::Custom(
-                        format!(
-                            "Post write validation failed. Error opening {}. Aborting",
-                            path_with_file_name.display()
-                        )
-                        .into(),
-                    ));
-                };
-                if let Err(e) = serde_json::from_slice::<Agent>(&content) {
-                    return Err(ChatError::Custom(
-                        format!("Post write validation failed for agent '{name}'. Malformed config detected: {e}")
-                            .into(),
-                    ));
+                let new_agent = Agent::load(os, &path_with_file_name, &mut None).await;
+                match new_agent {
+                    Ok(agent) => {
+                        session.conversation.agents.agents.insert(agent.name.clone(), agent);
+                    },
+                    Err(e) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Red),
+                            style::Print("Error: "),
+                            style::ResetColor,
+                            style::Print(&e),
+                            style::Print("\n"),
+                        )?;
+
+                        return Err(ChatError::Custom(
+                            format!("Post write validation failed for agent '{name}'. Malformed config detected: {e}")
+                                .into(),
+                        ));
+                    },
                 }
 
                 execute!(
@@ -169,29 +170,6 @@ impl AgentSubcommand {
                     style::Print(name),
                     style::SetForegroundColor(Color::Green),
                     style::Print(" has been created successfully"),
-                    style::SetForegroundColor(Color::Reset),
-                    style::Print("\n"),
-                    style::SetForegroundColor(Color::Yellow),
-                    style::Print("Changes take effect on next launch"),
-                    style::SetForegroundColor(Color::Reset)
-                )?;
-            },
-            Self::Rename { agent, new_name } => {
-                let mut agents = Agents::load(os, None, true, &mut session.stderr).await;
-                rename_agent(os, &mut agents, agent.clone(), new_name.clone())
-                    .await
-                    .map_err(|e| ChatError::Custom(Cow::Owned(e.to_string())))?;
-
-                execute!(
-                    session.stderr,
-                    style::SetForegroundColor(Color::Green),
-                    style::Print("Agent "),
-                    style::SetForegroundColor(Color::Cyan),
-                    style::Print(agent),
-                    style::SetForegroundColor(Color::Green),
-                    style::Print(" has been renamed to "),
-                    style::SetForegroundColor(Color::Cyan),
-                    style::Print(new_name),
                     style::SetForegroundColor(Color::Reset),
                     style::Print("\n"),
                     style::SetForegroundColor(Color::Yellow),
@@ -219,6 +197,33 @@ impl AgentSubcommand {
                     style::SetAttribute(Attribute::Reset)
                 )?;
             },
+            Self::SetDefault { name } => match session.conversation.agents.agents.get(&name) {
+                Some(agent) => {
+                    os.database
+                        .settings
+                        .set(Setting::ChatDefaultAgent, agent.name.clone())
+                        .await
+                        .map_err(|e| ChatError::Custom(e.to_string().into()))?;
+
+                    execute!(
+                        session.stderr,
+                        style::SetForegroundColor(Color::Green),
+                        style::Print("✓ Default agent set to '"),
+                        style::Print(&agent.name),
+                        style::Print("'. This will take effect the next time q chat is launched.\n"),
+                        style::ResetColor,
+                    )?;
+                },
+                None => {
+                    execute!(
+                        session.stderr,
+                        style::SetForegroundColor(Color::Red),
+                        style::Print("Error: "),
+                        style::ResetColor,
+                        style::Print(format!("No agent with name {name} found\n")),
+                    )?;
+                },
+            },
         }
 
         Ok(ChatState::PromptUser {
@@ -232,8 +237,8 @@ impl AgentSubcommand {
             Self::Create { .. } => "create",
             Self::Delete { .. } => "delete",
             Self::Set { .. } => "set",
-            Self::Rename { .. } => "rename",
             Self::Schema => "schema",
+            Self::SetDefault { .. } => "set_default",
         }
     }
 }

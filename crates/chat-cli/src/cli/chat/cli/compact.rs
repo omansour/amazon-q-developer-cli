@@ -49,13 +49,17 @@ pub struct CompactArgs {
 }
 
 impl CompactArgs {
-    pub async fn execute(self, os: &Os, session: &mut ChatSession) -> Result<ChatState, ChatError> {
+    pub async fn execute(self, os: &mut Os, session: &mut ChatSession) -> Result<ChatState, ChatError> {
         let default = CompactStrategy::default();
         let prompt = if self.prompt.is_empty() {
             None
         } else {
             Some(self.prompt.join(" "))
         };
+
+        // Compact interrupts the current conversation so this will always result in a new user
+        // turn.
+        session.reset_user_turn();
 
         session
             .compact_history(os, prompt, self.show_summary, CompactStrategy {

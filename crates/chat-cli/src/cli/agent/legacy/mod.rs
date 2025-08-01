@@ -20,10 +20,15 @@ use crate::cli::agent::legacy::context::LegacyContextConfig;
 use crate::os::Os;
 use crate::util::directories;
 
-pub async fn migrate(os: &mut Os) -> eyre::Result<Vec<Agent>> {
+/// Performs the migration from legacy profile configuration to agent configuration if it hasn't
+/// already been done.
+///
+/// Returns [Some] with the newly migrated agents if the migration was performed, [None] if the
+/// migration was already done previously.
+pub async fn migrate(os: &mut Os, force: bool) -> eyre::Result<Option<Vec<Agent>>> {
     let has_migrated = os.database.get_has_migrated()?;
-    if has_migrated.is_some_and(|has_migrated| has_migrated) {
-        bail!("Nothing to migrate");
+    if !force && has_migrated.is_some_and(|has_migrated| has_migrated) {
+        return Ok(None);
     }
 
     let legacy_global_context_path = directories::chat_global_context_path(os)?;
@@ -97,22 +102,27 @@ pub async fn migrate(os: &mut Os) -> eyre::Result<Vec<Agent>> {
     }
 
     let labels = vec!["Yes", "No"];
-    let selection: Option<_> = match Select::with_theme(&crate::util::dialoguer_theme())
-        .with_prompt("Legacy profiles detected. Would you like to migrate them?")
-        .items(&labels)
-        .default(1)
-        .interact_on_opt(&dialoguer::console::Term::stdout())
-    {
-        Ok(sel) => {
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                crossterm::style::SetForegroundColor(crossterm::style::Color::Magenta)
-            );
-            sel
-        },
-        // Ctrl‑C -> Err(Interrupted)
-        Err(dialoguer::Error::IO(ref e)) if e.kind() == std::io::ErrorKind::Interrupted => None,
-        Err(e) => bail!("Failed to choose an option: {e}"),
+    let selection: Option<_> = if !force {
+        match Select::with_theme(&crate::util::dialoguer_theme())
+            .with_prompt("Legacy profiles detected. Would you like to migrate them?")
+            .items(&labels)
+            .default(1)
+            .interact_on_opt(&dialoguer::console::Term::stdout())
+        {
+            Ok(sel) => {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::style::SetForegroundColor(crossterm::style::Color::Magenta)
+                );
+                sel
+            },
+            // Ctrl‑C -> Err(Interrupted)
+            Err(dialoguer::Error::IO(ref e)) if e.kind() == std::io::ErrorKind::Interrupted => None,
+            Err(e) => bail!("Failed to choose an option: {e}"),
+        }
+    } else {
+        // Yes
+        Some(0)
     };
 
     if selection.is_none() || selection == Some(1) {
@@ -138,7 +148,7 @@ pub async fn migrate(os: &mut Os) -> eyre::Result<Vec<Agent>> {
             name: LEGACY_GLOBAL_AGENT_NAME.to_string(),
             description: Some(DEFAULT_DESC.to_string()),
             path: Some(directories::chat_global_agent_path(os)?.join(format!("{LEGACY_GLOBAL_AGENT_NAME}.json"))),
-            resources: context.paths.iter().map(|p| format!("file://{p}")).collect(),
+            resources: context.paths.iter().map(|p| format!("file://{p}").into()).collect(),
             hooks: HashMap::from([
                 (
                     super::HookTrigger::AgentSpawn,
@@ -175,7 +185,7 @@ pub async fn migrate(os: &mut Os) -> eyre::Result<Vec<Agent>> {
             path: Some(global_agent_path.join(format!("{profile_name}.json"))),
             name: profile_name,
             description: Some(PROFILE_DESC.to_string()),
-            resources: context.paths.iter().map(|p| format!("file://{p}")).collect(),
+            resources: context.paths.iter().map(|p| format!("file://{p}").into()).collect(),
             hooks: HashMap::from([
                 (
                     super::HookTrigger::AgentSpawn,
@@ -216,5 +226,5 @@ pub async fn migrate(os: &mut Os) -> eyre::Result<Vec<Agent>> {
 
     os.database.set_has_migrated()?;
 
-    Ok(new_agents)
+    Ok(Some(new_agents))
 }
