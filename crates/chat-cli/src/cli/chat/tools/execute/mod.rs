@@ -110,6 +110,10 @@ impl ExecuteCommand {
                     return true;
                 },
                 Some(cmd) => {
+                    // Check if command matches any allowed pattern (exact match or wildcard)
+                    if Self::command_matches_allowed_patterns(cmd, &cmd_args.join(" "), allowed_commands) {
+                        continue;
+                    }
                     // Special casing for `grep`. -P flag for perl regexp has RCE issues, apparently
                     // should not be supported within grep but is flagged as a possibility since this is perl
                     // regexp.
@@ -122,6 +126,46 @@ impl ExecuteCommand {
                     }
                 },
                 None => return true,
+            }
+        }
+
+        false
+    }
+
+    /// Check if a command matches any of the allowed patterns.
+    /// Supports both exact string matching and wildcard patterns.
+    fn command_matches_allowed_patterns(cmd: &str, full_command: &str, allowed_commands: &[String]) -> bool {
+        for pattern in allowed_commands {
+            // First try exact string matching for backward compatibility
+            // Check both the first word and the full command
+            if pattern == cmd || pattern == full_command {
+                return true;
+            }
+
+            // Then try wildcard pattern matching
+            if pattern.contains('*') {
+                // For wildcard patterns, we need to decide what to match against
+                let match_target = if pattern.starts_with(cmd) {
+                    // If pattern starts with the command name, match against full command
+                    // e.g., "git commit*" should match "git commit -m message"
+                    full_command
+                } else {
+                    // Otherwise, match against just the command name
+                    // e.g., "git*" should match "git"
+                    cmd
+                };
+
+                if let Ok(glob) = globset::Glob::new(pattern) {
+                    if glob.compile_matcher().is_match(match_target) {
+                        return true;
+                    }
+                } else {
+                    // If glob pattern is invalid, log warning and fall back to exact match
+                    tracing::warn!("Invalid glob pattern in allowedCommands: {}", pattern);
+                    if pattern == cmd || pattern == full_command {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -194,38 +238,40 @@ impl ExecuteCommand {
         let Self { command, .. } = self;
         let tool_name = if cfg!(windows) { "execute_cmd" } else { "execute_bash" };
         let is_in_allowlist = agent.allowed_tools.contains("execute_bash");
-        match agent.tools_settings.get(tool_name) {
-            Some(settings) if is_in_allowlist => {
-                let Settings {
-                    allowed_commands,
-                    denied_commands,
-                    allow_read_only,
-                } = match serde_json::from_value::<Settings>(settings.clone()) {
-                    Ok(settings) => settings,
-                    Err(e) => {
-                        error!("Failed to deserialize tool settings for execute_bash: {:?}", e);
-                        return PermissionEvalResult::Ask;
-                    },
-                };
+        
+        // First check if there are specific tool settings
+        if let Some(settings) = agent.tools_settings.get(tool_name) {
+            let Settings {
+                allowed_commands,
+                denied_commands,
+                allow_read_only,
+            } = match serde_json::from_value::<Settings>(settings.clone()) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    error!("Failed to deserialize tool settings for execute_bash: {:?}", e);
+                    return PermissionEvalResult::Ask;
+                },
+            };
 
-                if denied_commands.iter().any(|dc| command.contains(dc)) {
-                    return PermissionEvalResult::Deny;
-                }
+            if denied_commands.iter().any(|dc| command.contains(dc)) {
+                return PermissionEvalResult::Deny;
+            }
 
-                if self.requires_acceptance(Some(&allowed_commands), allow_read_only) {
-                    PermissionEvalResult::Ask
-                } else {
-                    PermissionEvalResult::Allow
-                }
-            },
-            None if is_in_allowlist => PermissionEvalResult::Allow,
-            _ => {
-                if self.requires_acceptance(None, default_allow_read_only()) {
-                    PermissionEvalResult::Ask
-                } else {
-                    PermissionEvalResult::Allow
-                }
-            },
+            if self.requires_acceptance(Some(&allowed_commands), allow_read_only) {
+                PermissionEvalResult::Ask
+            } else {
+                PermissionEvalResult::Allow
+            }
+        } else if is_in_allowlist {
+            // Tool is in allowedTools but no specific settings
+            PermissionEvalResult::Allow
+        } else {
+            // Default behavior - use read-only commands and prompt for others
+            if self.requires_acceptance(None, default_allow_read_only()) {
+                PermissionEvalResult::Ask
+            } else {
+                PermissionEvalResult::Allow
+            }
         }
     }
 }
@@ -345,6 +391,255 @@ mod tests {
                 "expected command: `{}` to have requires_acceptance: `{}`",
                 cmd,
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_wildcard_pattern_matching() {
+        let test_cases = vec![
+            // Test case: (command, allowed_patterns, allow_read_only, should_require_acceptance)
+            
+            // Exact string matching (backward compatibility)
+            ("git status", vec!["git".to_string()], true, false),
+            ("git status", vec!["ls".to_string()], true, true), // git is not read-only
+            
+            // Basic wildcard patterns
+            ("git status", vec!["git*".to_string()], true, false),
+            ("git commit -m 'test'", vec!["git*".to_string()], true, false),
+            ("ls -la", vec!["git*".to_string()], true, false), // ls is read-only, so allowed
+            ("rm file", vec!["git*".to_string()], true, true), // rm is not read-only and not in pattern
+            
+            // Specific command with wildcard
+            ("git commit -m 'test'", vec!["git commit*".to_string()], true, false),
+            ("git commit --amend", vec!["git commit*".to_string()], true, false),
+            ("git status", vec!["git commit*".to_string()], true, true), // git status doesn't match git commit*
+            
+            // Multiple patterns
+            ("git status", vec!["ls*".to_string(), "git*".to_string()], true, false),
+            ("ls -la", vec!["ls*".to_string(), "git*".to_string()], true, false),
+            ("rm file", vec!["ls*".to_string(), "git*".to_string()], true, true),
+            
+            // Complex patterns
+            ("npm install package", vec!["npm install *".to_string()], true, false),
+            ("npm run build", vec!["npm install *".to_string()], true, true),
+            ("npm run test", vec!["npm run *".to_string()], true, false),
+            
+            // Mixed exact and wildcard patterns
+            ("git status", vec!["ls".to_string(), "git*".to_string()], true, false),
+            ("ls", vec!["ls".to_string(), "git*".to_string()], true, false),
+            ("rm file", vec!["ls".to_string(), "git*".to_string()], true, true),
+            
+            // Edge cases
+            ("git", vec!["git*".to_string()], true, false),
+            ("g", vec!["git*".to_string()], true, true), // g is not read-only and doesn't match
+            ("gitfoo", vec!["git*".to_string()], true, false), // This should match git*
+            
+            // Test with allow_read_only = false
+            ("ls -la", vec!["git*".to_string()], false, true), // ls doesn't match pattern and read-only not allowed
+            ("cat file", vec!["git*".to_string()], false, true), // cat doesn't match pattern and read-only not allowed
+        ];
+
+        for (command, allowed_patterns, allow_read_only, should_require_acceptance) in test_cases {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": command,
+            }))
+            .unwrap();
+            
+            let result = tool.requires_acceptance(Some(&allowed_patterns), allow_read_only);
+            assert_eq!(
+                result, should_require_acceptance,
+                "Command '{}' with patterns {:?}, allow_read_only={} - expected requires_acceptance: {}, got: {}",
+                command, allowed_patterns, allow_read_only, should_require_acceptance, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_matches_allowed_patterns() {
+        // Test exact matching - first word
+        assert!(ExecuteCommand::command_matches_allowed_patterns("git", "git status", &["git".to_string()]));
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("git", "git status", &["ls".to_string()]));
+
+        // Test exact matching - full command
+        assert!(ExecuteCommand::command_matches_allowed_patterns("cargo", "cargo check", &["cargo check".to_string()]));
+        assert!(ExecuteCommand::command_matches_allowed_patterns("npm", "npm install package", &["npm install package".to_string()]));
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("cargo", "cargo build", &["cargo check".to_string()]));
+
+        // Test wildcard matching
+        assert!(ExecuteCommand::command_matches_allowed_patterns("git", "git status", &["git*".to_string()]));
+        assert!(ExecuteCommand::command_matches_allowed_patterns("git", "git commit -m test", &["git*".to_string()]));
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("ls", "ls -la", &["git*".to_string()]));
+
+        // Test specific command wildcards
+        assert!(ExecuteCommand::command_matches_allowed_patterns("git", "git commit -m test", &["git commit*".to_string()]));
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("git", "git status", &["git commit*".to_string()]));
+
+        // Test complex patterns
+        assert!(ExecuteCommand::command_matches_allowed_patterns("npm", "npm install package", &["npm install *".to_string()]));
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("npm", "npm run test", &["npm install *".to_string()]));
+
+        // Test invalid patterns (should fall back to exact matching)
+        assert!(!ExecuteCommand::command_matches_allowed_patterns("git", "git status", &["[invalid".to_string()]));
+    }
+
+    #[test]
+    fn test_wildcard_patterns_with_dangerous_commands() {
+        // Even with wildcard patterns, dangerous commands should still be caught
+        let dangerous_commands = vec![
+            "rm -rf / && echo done", // && is dangerous
+            "git status && rm important_file", // && is dangerous
+            "echo $(rm file)", // $() is dangerous
+        ];
+
+        for cmd in dangerous_commands {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": cmd,
+            }))
+            .unwrap();
+            
+            // Even with very permissive wildcard patterns, dangerous commands should require acceptance
+            let very_permissive_patterns = vec!["*".to_string(), "git*".to_string(), "rm*".to_string()];
+            assert!(
+                tool.requires_acceptance(Some(&very_permissive_patterns), true),
+                "Dangerous command '{}' should require acceptance even with permissive patterns",
+                cmd
+            );
+        }
+
+        // Test piped commands - these should be handled differently
+        // For piped commands, each command in the pipe is checked separately
+        let piped_commands = vec![
+            ("ls | rm", vec!["ls*".to_string()], true), // rm is not allowed
+            ("ls | rm", vec!["ls*".to_string(), "rm*".to_string()], false), // both allowed
+            ("cat file | grep pattern", vec!["cat*".to_string()], false), // grep is read-only
+        ];
+
+        for (cmd, patterns, should_require_acceptance) in piped_commands {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": cmd,
+            }))
+            .unwrap();
+            
+            let result = tool.requires_acceptance(Some(&patterns), true);
+            assert_eq!(
+                result, should_require_acceptance,
+                "Piped command '{}' with patterns {:?} - expected requires_acceptance: {}, got: {}",
+                cmd, patterns, should_require_acceptance, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_toolsettings_independent_of_allowedtools() {
+        // Test that toolsSettings work even when execute_bash is NOT in allowedTools
+        // Create agent through JSON deserialization to handle the complex types
+        let agent_json = serde_json::json!({
+            "name": "test_agent",
+            "allowedTools": ["fs_read"], // execute_bash NOT included
+            "toolsSettings": {
+                "execute_bash": {
+                    "allowedCommands": ["git*", "ls*"],
+                    "allowReadOnly": true
+                }
+            }
+        });
+        
+        let agent: crate::cli::agent::Agent = serde_json::from_value(agent_json).unwrap();
+
+        let test_cases = vec![
+            // Commands that should match patterns and be allowed
+            ("git status", false),
+            ("git commit -m test", false),
+            ("ls -la", false),
+            
+            // Commands that don't match patterns but are read-only (should be allowed)
+            ("cat file.txt", false),
+            ("echo hello", false),
+            
+            // Commands that don't match patterns and aren't read-only (should require acceptance)
+            ("rm file.txt", true),
+            ("npm install", true),
+        ];
+
+        for (command, should_require_acceptance) in test_cases {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": command,
+            }))
+            .unwrap();
+            
+            let result = tool.eval_perm(&agent);
+            let requires_acceptance = matches!(result, PermissionEvalResult::Ask);
+            
+            assert_eq!(
+                requires_acceptance, should_require_acceptance,
+                "Command '{}' - expected requires_acceptance: {}, got: {} (result: {:?})",
+                command, should_require_acceptance, requires_acceptance, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_exact_full_command_matching_bug_fix() {
+        // This test specifically covers the bug where "cargo check" was in allowedCommands
+        // but still prompted for permission because we only compared against the first word "cargo"
+        
+        let test_cases = vec![
+            // Test case: (command, allowed_patterns, should_require_acceptance)
+            ("cargo check", vec!["cargo check".to_string()], false), // Should be allowed
+            ("cargo build", vec!["cargo check".to_string()], true),  // Should require acceptance
+            ("npm install package", vec!["npm install".to_string()], true), // Partial match, should require acceptance
+            ("npm install", vec!["npm install".to_string()], false), // Exact match, should be allowed
+            ("git commit -m test", vec!["git commit -m test".to_string()], false), // Exact full match
+            ("git commit -m different", vec!["git commit -m test".to_string()], true), // Different, should require acceptance
+        ];
+
+        for (command, allowed_patterns, should_require_acceptance) in test_cases {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": command,
+            }))
+            .unwrap();
+            
+            let result = tool.requires_acceptance(Some(&allowed_patterns), true);
+            assert_eq!(
+                result, should_require_acceptance,
+                "Command '{}' with patterns {:?} - expected requires_acceptance: {}, got: {}",
+                command, allowed_patterns, should_require_acceptance, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_piped_commands_with_wildcards() {
+        let test_cases = vec![
+            // Safe piped commands with wildcards
+            ("git log | grep commit", vec!["git*".to_string(), "grep*".to_string()], false),
+            ("ls -la | grep .txt", vec!["ls*".to_string(), "grep*".to_string()], false),
+            
+            // Mixed allowed/disallowed in pipe
+            ("git status | rm", vec!["git*".to_string()], true), // rm not allowed and not read-only
+            ("ls | grep pattern", vec!["ls*".to_string()], false), // grep is read-only, so allowed
+            
+            // All commands in pipe allowed
+            ("find . -name '*.rs' | grep main | head -5", 
+             vec!["find*".to_string(), "grep*".to_string(), "head*".to_string()], false),
+             
+            // Test with read-only commands in pipe
+            ("cat file | head -10", vec![], false), // both cat and head are read-only
+            ("ls | sort", vec![], true), // ls is read-only but sort is not, and sort not in patterns
+        ];
+
+        for (command, allowed_patterns, should_require_acceptance) in test_cases {
+            let tool = serde_json::from_value::<ExecuteCommand>(serde_json::json!({
+                "command": command,
+            }))
+            .unwrap();
+            
+            let result = tool.requires_acceptance(Some(&allowed_patterns), true);
+            assert_eq!(
+                result, should_require_acceptance,
+                "Piped command '{}' with patterns {:?} - expected requires_acceptance: {}, got: {}",
+                command, allowed_patterns, should_require_acceptance, result
             );
         }
     }
