@@ -1544,7 +1544,7 @@ impl ChatSession {
             };
 
             let (option_key, option_description) = if is_execute_tool {
-                ("a", "' to allow similar commands. [")
+                ("a", "' to allow similar or exact commands in the futur. [")
             } else {
                 ("t", "' to trust (always allow) this tool for the session. [")
             };
@@ -2843,8 +2843,9 @@ impl ChatSession {
 
             match choice {
                 "1" => {
-                    // Allow this exact command only
-                    self.add_allowed_command_pattern(&command, os).await?;
+                    // Allow this exact command only - escape regex special characters
+                    let escaped_command = regex::escape(&command);
+                    self.add_allowed_command_pattern(&escaped_command, os).await?;
                     queue!(
                         self.stderr,
                         style::SetForegroundColor(Color::Green),
@@ -2854,13 +2855,14 @@ impl ChatSession {
                     return Ok(AllowCommandResult::AddedRule);
                 },
                 "2" => {
-                    // Allow all commands with first word (e.g., "touch *")
-                    let pattern = format!("{} *", first_word);
+                    // Allow all commands with first word - create regex pattern
+                    let escaped_first_word = regex::escape(&first_word);
+                    let pattern = format!("{}\\s.*", escaped_first_word);
                     self.add_allowed_command_pattern(&pattern, os).await?;
                     queue!(
                         self.stderr,
                         style::SetForegroundColor(Color::Green),
-                        style::Print(format!("\nAllowed command rule added: '{}'\n\n", pattern)),
+                        style::Print(format!("\nAllowed command rule added for all '{}' commands\n\n", first_word)),
                         style::SetForegroundColor(Color::Reset)
                     )?;
                     return Ok(AllowCommandResult::AddedRule);
