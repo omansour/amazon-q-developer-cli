@@ -1767,10 +1767,10 @@ impl ChatSession {
                     let tool_use = &self.tool_uses[index];
                     tool_use.name == "execute_bash" || tool_use.name == "execute_cmd"
                 };
-                
+
                 let is_allow_similar = ["a", "A"].contains(&input);
                 let is_trust = ["t", "T"].contains(&input);
-                
+
                 if ["y", "Y"].contains(&input) || is_allow_similar || is_trust {
                     if is_allow_similar && is_execute_tool {
                         // Handle 'a' option for execute tools - show menu for allowed command patterns
@@ -1815,15 +1815,17 @@ impl ChatSession {
                         queue!(
                             self.stderr,
                             style::SetForegroundColor(Color::Red),
-                            style::Print(format!("\n'{}' is not available for {} tools. Use '{}' instead.\n", 
-                                wrong_key, tool_type, right_key)),
+                            style::Print(format!(
+                                "\n'{}' is not available for {} tools. Use '{}' instead.\n",
+                                wrong_key, tool_type, right_key
+                            )),
                             style::SetForegroundColor(Color::Reset)
                         )?;
                         return Ok(ChatState::PromptUser {
                             skip_printing_tools: true,
                         });
                     }
-                    
+
                     // Accept the tool use
                     self.tool_uses[index].accepted = true;
                     return Ok(ChatState::ExecuteTools);
@@ -2800,7 +2802,11 @@ impl ChatSession {
     }
 
     /// Handle the 'a' option for execute tools - show menu for allowed command patterns
-    async fn handle_allow_similar_commands_menu(&mut self, tool_index: usize, os: &Os) -> Result<AllowCommandResult, ChatError> {
+    async fn handle_allow_similar_commands_menu(
+        &mut self,
+        tool_index: usize,
+        os: &Os,
+    ) -> Result<AllowCommandResult, ChatError> {
         // Extract the command first to avoid borrowing issues
         let command = {
             let tool_use = &self.tool_uses[tool_index];
@@ -2828,7 +2834,10 @@ impl ChatSession {
             queue!(
                 self.stderr,
                 style::Print(format!("type 1. Allow this exact command only: '{}'\n", command)),
-                style::Print(format!("type 2. Allow all '{}' commands (first word only)\n", first_word)),
+                style::Print(format!(
+                    "type 2. Allow all '{}' commands (first word only)\n",
+                    first_word
+                )),
                 style::Print("type 3. Run the command without adding a rule\n"),
                 style::Print("type 4. Exit allowed command rule creation and don't run any commands\n\n")
             )?;
@@ -2836,9 +2845,9 @@ impl ChatSession {
 
             // Get user input
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).map_err(|e| {
-                ChatError::Custom(format!("Failed to read user input: {}", e).into())
-            })?;
+            std::io::stdin()
+                .read_line(&mut input)
+                .map_err(|e| ChatError::Custom(format!("Failed to read user input: {}", e).into()))?;
             let choice = input.trim();
 
             match choice {
@@ -2862,7 +2871,10 @@ impl ChatSession {
                     queue!(
                         self.stderr,
                         style::SetForegroundColor(Color::Green),
-                        style::Print(format!("\nAllowed command rule added for all '{}' commands\n\n", first_word)),
+                        style::Print(format!(
+                            "\nAllowed command rule added for all '{}' commands\n\n",
+                            first_word
+                        )),
                         style::SetForegroundColor(Color::Reset)
                     )?;
                     return Ok(AllowCommandResult::AddedRule);
@@ -2895,7 +2907,7 @@ impl ChatSession {
                         style::SetForegroundColor(Color::Reset)
                     )?;
                     // Continue the loop to retry
-                }
+                },
             }
         }
     }
@@ -2903,22 +2915,22 @@ impl ChatSession {
     /// Add an allowed command pattern to the current agent configuration
     async fn add_allowed_command_pattern(&mut self, pattern: &str, os: &Os) -> Result<(), ChatError> {
         use serde_json::Value;
-        
+
         if let Some(agent) = self.conversation.agents.get_active_mut() {
             let tool_name = if cfg!(windows) { "execute_cmd" } else { "execute_bash" };
-            
+
             // Get or create the toolsSettings for execute tool
             // We need to create the ToolSettingTarget through deserialization since constructor is private
-            let tool_setting_key: crate::cli::agent::ToolSettingTarget = 
+            let tool_setting_key: crate::cli::agent::ToolSettingTarget =
                 serde_json::from_str(&format!("\"{}\"", tool_name))
-                .map_err(|e| ChatError::Custom(format!("Failed to create tool setting key: {}", e).into()))?;
-            
-            let settings = agent.tools_settings
-                .entry(tool_setting_key)
-                .or_insert_with(|| serde_json::json!({
+                    .map_err(|e| ChatError::Custom(format!("Failed to create tool setting key: {}", e).into()))?;
+
+            let settings = agent.tools_settings.entry(tool_setting_key).or_insert_with(|| {
+                serde_json::json!({
                     "allowReadOnly": true,
                     "allowedCommands": []
-                }));
+                })
+            });
 
             // Add the new pattern to allowedCommands
             if let Some(allowed_commands) = settings.get_mut("allowedCommands") {
