@@ -437,7 +437,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn test_eval_perm() {
         let tool_name = if cfg!(windows) { "execute_cmd" } else { "execute_bash" };
         let agent = Agent {
@@ -524,7 +523,10 @@ mod tests {
         // Should contain both the existing value and our metadata
         assert!(user_agent_value.contains("ExistingValue"));
         assert!(user_agent_value.contains(USER_AGENT_APP_NAME));
-=======
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn test_eval_perm_allowed_tools_priority() {
         use crate::cli::agent::{Agent, PermissionEvalResult};
 
@@ -561,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_eval_perm_fine_grained_control() {
         use crate::cli::agent::{Agent, PermissionEvalResult};
 
