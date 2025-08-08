@@ -808,11 +808,13 @@ impl ChatSession {
 
         if self.spinner.is_some() {
             drop(self.spinner.take());
-            queue!(
-                self.stderr,
-                terminal::Clear(terminal::ClearType::CurrentLine),
-                cursor::MoveToColumn(0),
-            )?;
+            if !self.quiet {
+                queue!(
+                    self.stderr,
+                    terminal::Clear(terminal::ClearType::CurrentLine),
+                    cursor::MoveToColumn(0),
+                )?;
+            }
         }
 
         let (context, report, display_err_message) = match err {
@@ -1873,7 +1875,9 @@ impl ChatSession {
 
             queue!(self.stderr, style::SetForegroundColor(Color::Magenta))?;
             queue!(self.stderr, style::SetForegroundColor(Color::Reset))?;
-            queue!(self.stderr, cursor::Hide)?;
+            if !self.quiet {
+                queue!(self.stderr, cursor::Hide)?;
+            }
 
             if self.interactive {
                 self.spinner = Some(Spinner::new(Spinners::Dots, "Thinking...".to_owned()));
@@ -1940,6 +1944,7 @@ impl ChatSession {
                 .settings
                 .get_bool(Setting::ChatEnableNotifications)
                 .unwrap_or(false)
+                && !self.quiet
             {
                 play_notification_bell(!allowed);
             }
@@ -2002,7 +2007,9 @@ impl ChatSession {
                     cursor::Show
                 )?;
             }
-            execute!(self.stdout, style::Print("\n"))?;
+            if !self.quiet {
+                execute!(self.stdout, style::Print("\n"))?;
+            }
 
             let tool_end_time = Instant::now();
             let tool_time = tool_end_time.duration_since(tool_start);
@@ -2133,18 +2140,22 @@ impl ChatSession {
         if !image_blocks.is_empty() {
             let images = image_blocks.into_iter().map(|(block, _)| block).collect();
             self.conversation.add_tool_results_with_images(tool_results, images);
-            execute!(
-                self.stderr,
-                style::SetAttribute(Attribute::Reset),
-                style::SetForegroundColor(Color::Reset),
-                style::Print("\n")
-            )?;
+            if !self.quiet {
+                execute!(
+                    self.stderr,
+                    style::SetAttribute(Attribute::Reset),
+                    style::SetForegroundColor(Color::Reset),
+                    style::Print("\n")
+                )?;
+            }
         } else {
             self.conversation.add_tool_results(tool_results);
         }
 
         execute!(self.stderr, cursor::Hide)?;
-        execute!(self.stderr, style::Print("\n"), style::SetAttribute(Attribute::Reset))?;
+        if !self.quiet {
+            execute!(self.stderr, style::Print("\n"), style::SetAttribute(Attribute::Reset))?;
+        }
         if self.interactive {
             self.spinner = Some(Spinner::new(Spinners::Dots, "Thinking...".to_string()));
         }
@@ -2181,7 +2192,7 @@ impl ChatSession {
         let mut ended = false;
         let mut state = ParseState::new(
             Some(self.terminal_width()),
-            os.database.settings.get_bool(Setting::ChatDisableMarkdownRendering),
+            Some(self.quiet || os.database.settings.get_bool(Setting::ChatDisableMarkdownRendering).unwrap_or(false)),
         );
         let mut response_prefix_printed = false;
 
@@ -2190,13 +2201,15 @@ impl ChatSession {
 
         if self.spinner.is_some() {
             drop(self.spinner.take());
-            queue!(
-                self.stderr,
-                style::SetForegroundColor(Color::Reset),
-                cursor::MoveToColumn(0),
-                cursor::Show,
-                terminal::Clear(terminal::ClearType::CurrentLine),
-            )?;
+            if !self.quiet {
+                queue!(
+                    self.stderr,
+                    style::SetForegroundColor(Color::Reset),
+                    cursor::MoveToColumn(0),
+                    cursor::Show,
+                    terminal::Clear(terminal::ClearType::CurrentLine),
+                )?;
+            }
         }
 
         loop {
@@ -2207,7 +2220,9 @@ impl ChatSession {
                         parser::ResponseEvent::ToolUseStart { name } => {
                             // We need to flush the buffer here, otherwise text will not be
                             // printed while we are receiving tool use events.
-                            buf.push('\n');
+                            if !self.quiet {
+                                buf.push('\n');
+                            }
                             tool_name_being_recvd = Some(name);
                         },
                         parser::ResponseEvent::AssistantText(text) => {
@@ -2280,7 +2295,9 @@ impl ChatSession {
                                 duration.as_secs()
                             );
 
-                            execute!(self.stderr, cursor::Hide)?;
+                            if !self.quiet {
+                                execute!(self.stderr, cursor::Hide)?;
+                            }
                             self.spinner = Some(Spinner::new(Spinners::Dots, "Dividing up the work...".to_string()));
 
                             // For stream timeouts, we'll tell the model to try and split its response into
@@ -2370,12 +2387,14 @@ impl ChatSession {
 
             if tool_name_being_recvd.is_none() && !buf.is_empty() && self.spinner.is_some() {
                 drop(self.spinner.take());
-                queue!(
-                    self.stderr,
-                    terminal::Clear(terminal::ClearType::CurrentLine),
-                    cursor::MoveToColumn(0),
-                    cursor::Show
-                )?;
+                if !self.quiet {
+                    queue!(
+                        self.stderr,
+                        terminal::Clear(terminal::ClearType::CurrentLine),
+                        cursor::MoveToColumn(0),
+                        cursor::Show
+                    )?;
+                }
             }
 
             // Print the response for normal cases
@@ -2401,7 +2420,9 @@ impl ChatSession {
 
             // Set spinner after showing all of the assistant text content so far.
             if tool_name_being_recvd.is_some() {
-                queue!(self.stderr, cursor::Hide)?;
+                if !self.quiet {
+                    queue!(self.stderr, cursor::Hide)?;
+                }
                 if self.interactive {
                     self.spinner = Some(Spinner::new(Spinners::Dots, "Thinking...".to_string()));
                 }
@@ -2413,12 +2434,15 @@ impl ChatSession {
                     .settings
                     .get_bool(Setting::ChatEnableNotifications)
                     .unwrap_or(false)
+                    && !self.quiet
                 {
                     // For final responses (no tools suggested), always play the bell
                     play_notification_bell(tool_uses.is_empty());
                 }
 
-                queue!(self.stderr, style::ResetColor, style::SetAttribute(Attribute::Reset))?;
+                if !self.quiet {
+                    queue!(self.stderr, style::ResetColor, style::SetAttribute(Attribute::Reset))?;
+                }
                 execute!(self.stdout, style::Print("\n"))?;
 
                 for (i, citation) in &state.citations {
