@@ -238,7 +238,7 @@ impl ChatArgs {
         let mut stderr = std::io::stderr();
 
         let args: Vec<String> = std::env::args().collect();
-        if args
+        if !self.quiet && args
             .iter()
             .any(|arg| arg == "--profile" || arg.starts_with("--profile="))
         {
@@ -288,7 +288,7 @@ impl ChatArgs {
                 .get_active()
                 .is_some_and(|a| !a.mcp_servers.mcp_servers.is_empty())
             {
-                if !self.no_interactive && !os.database.settings.get_bool(Setting::McpLoadedBefore).unwrap_or(false) {
+                if !self.no_interactive && !self.quiet && !os.database.settings.get_bool(Setting::McpLoadedBefore).unwrap_or(false) {
                     execute!(
                         stderr,
                         style::Print(
@@ -301,7 +301,7 @@ impl ChatArgs {
 
             if let Some(trust_tools) = self.trust_tools.take() {
                 for tool in &trust_tools {
-                    if !tool.starts_with("@") && !NATIVE_TOOLS.contains(&tool.as_str()) {
+                    if !self.quiet && !tool.starts_with("@") && !NATIVE_TOOLS.contains(&tool.as_str()) {
                         let _ = queue!(
                             stderr,
                             style::SetForegroundColor(Color::Yellow),
@@ -1662,7 +1662,9 @@ impl ChatSession {
     }
 
     async fn handle_input(&mut self, os: &mut Os, mut user_input: String) -> Result<ChatState, ChatError> {
-        queue!(self.stderr, style::Print('\n'))?;
+        if !self.quiet {
+            queue!(self.stderr, style::Print('\n'))?;
+        }
         user_input = sanitize_unicode_tags(&user_input);
         let input = user_input.trim();
 
@@ -2236,7 +2238,12 @@ impl ChatSession {
                                 )?;
                                 response_prefix_printed = true;
                             }
-                            buf.push_str(&text);
+                            if self.quiet && buf.is_empty() {
+                                // In quiet mode, trim leading whitespace from the first text
+                                buf.push_str(text.trim_start());
+                            } else {
+                                buf.push_str(&text);
+                            }
                         },
                         parser::ResponseEvent::ToolUse(tool_use) => {
                             if self.spinner.is_some() {
@@ -2639,34 +2646,38 @@ impl ChatSession {
 
         let tool_use = &self.tool_uses[tool_index];
 
-        queue!(
-            self.stdout,
-            style::SetForegroundColor(Color::Magenta),
-            style::Print(format!(
-                "🛠️  Using tool: {}{}",
-                tool_use.tool.display_name(),
-                if trusted { " (trusted)".dark_green() } else { "".reset() }
-            )),
-            style::SetForegroundColor(Color::Reset)
-        )?;
-        if let Tool::Custom(ref tool) = tool_use.tool {
+        if !self.quiet {
             queue!(
                 self.stdout,
-                style::SetForegroundColor(Color::Reset),
-                style::Print(" from mcp server "),
                 style::SetForegroundColor(Color::Magenta),
-                style::Print(tool.client.get_server_name()),
-                style::SetForegroundColor(Color::Reset),
+                style::Print(format!(
+                    "🛠️  Using tool: {}{}",
+                    tool_use.tool.display_name(),
+                    if trusted { " (trusted)".dark_green() } else { "".reset() }
+                )),
+                style::SetForegroundColor(Color::Reset)
             )?;
+            if let Tool::Custom(ref tool) = tool_use.tool {
+                queue!(
+                    self.stdout,
+                    style::SetForegroundColor(Color::Reset),
+                    style::Print(" from mcp server "),
+                    style::SetForegroundColor(Color::Magenta),
+                    style::Print(tool.client.get_server_name()),
+                    style::SetForegroundColor(Color::Reset),
+                )?;
+            }
         }
 
-        execute!(
-            self.stdout,
-            style::Print("\n"),
-            style::Print(CONTINUATION_LINE),
-            style::Print("\n"),
-            style::Print(TOOL_BULLET)
-        )?;
+        if !self.quiet {
+            execute!(
+                self.stdout,
+                style::Print("\n"),
+                style::Print(CONTINUATION_LINE),
+                style::Print("\n"),
+                style::Print(TOOL_BULLET)
+            )?;
+        }
 
         tool_use
             .tool
