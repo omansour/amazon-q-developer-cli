@@ -198,12 +198,20 @@ pub struct ChatArgs {
     /// Whether the command should run without expecting user input
     #[arg(long, alias = "non-interactive")]
     pub no_interactive: bool,
+    /// Suppress all UI elements and output only the AI response (implies --no-interactive)
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
     /// The first question to ask
     pub input: Option<String>,
 }
 
 impl ChatArgs {
     pub async fn execute(mut self, os: &mut Os) -> Result<ExitCode> {
+        // Quiet mode implies non-interactive
+        if self.quiet {
+            self.no_interactive = true;
+        }
+
         let mut input = self.input;
 
         if self.no_interactive && input.is_none() {
@@ -252,17 +260,26 @@ impl ChatArgs {
 
         let agents = {
             let skip_migration = self.no_interactive;
-            let (mut agents, md) = Agents::load(os, self.agent.as_deref(), skip_migration, &mut stderr).await;
+            let (mut agents, md) = if self.quiet {
+                let mut null_stderr = std::io::sink();
+                Agents::load(os, self.agent.as_deref(), skip_migration, &mut null_stderr).await
+            } else {
+                Agents::load(os, self.agent.as_deref(), skip_migration, &mut stderr).await
+            };
             agents.trust_all_tools = self.trust_all_tools;
 
             os.telemetry
-                .send_agent_config_init(&os.database, conversation_id.clone(), AgentConfigInitArgs {
-                    agents_loaded_count: md.load_count as i64,
-                    agents_loaded_failed_count: md.load_failed_count as i64,
-                    legacy_profile_migration_executed: md.migration_performed,
-                    legacy_profile_migrated_count: md.migrated_count as i64,
-                    launched_agent: md.launched_agent,
-                })
+                .send_agent_config_init(
+                    &os.database,
+                    conversation_id.clone(),
+                    AgentConfigInitArgs {
+                        agents_loaded_count: md.load_count as i64,
+                        agents_loaded_failed_count: md.load_failed_count as i64,
+                        legacy_profile_migration_executed: md.migration_performed,
+                        legacy_profile_migrated_count: md.migrated_count as i64,
+                        launched_agent: md.launched_agent,
+                    },
+                )
                 .await
                 .map_err(|err| error!(?err, "failed to send agent config init telemetry"))
                 .ok();
@@ -334,14 +351,27 @@ impl ChatArgs {
 
         let (prompt_request_sender, prompt_request_receiver) = std::sync::mpsc::channel::<Option<String>>();
         let (prompt_response_sender, prompt_response_receiver) = std::sync::mpsc::channel::<Vec<String>>();
+        
+        // Use null output for tool manager in quiet mode to suppress MCP loading messages
+        let tool_output: Box<dyn std::io::Write + Send + Sync + 'static> = if self.quiet {
+            Box::new(std::io::sink())
+        } else {
+            Box::new(std::io::stderr())
+        };
+        
         let mut tool_manager = ToolManagerBuilder::default()
             .prompt_list_sender(prompt_response_sender)
             .prompt_list_receiver(prompt_request_receiver)
             .conversation_id(&conversation_id)
             .agent(agents.get_active().cloned().unwrap_or_default())
-            .build(os, Box::new(std::io::stderr()), !self.no_interactive)
+            .build(os, tool_output, !self.no_interactive)
             .await?;
-        let tool_config = tool_manager.load_tools(os, &mut stderr).await?;
+        let tool_config = if self.quiet {
+            let mut null_stderr = std::io::sink();
+            tool_manager.load_tools(os, &mut null_stderr).await?
+        } else {
+            tool_manager.load_tools(os, &mut stderr).await?
+        };
 
         ChatSession::new(
             os,
@@ -357,6 +387,7 @@ impl ChatArgs {
             model_id,
             tool_config,
             !self.no_interactive,
+            self.quiet,
         )
         .await?
         .spawn(os)
@@ -558,6 +589,7 @@ pub struct ChatSession {
     /// Pending prompts to be sent
     pending_prompts: VecDeque<Prompt>,
     interactive: bool,
+    quiet: bool,
     inner: Option<ChatState>,
     ctrlc_rx: broadcast::Receiver<()>,
 }
@@ -578,6 +610,7 @@ impl ChatSession {
         model_id: Option<String>,
         tool_config: HashMap<String, ToolSpec>,
         interactive: bool,
+        quiet: bool,
     ) -> Result<Self> {
         let model_options = get_model_options(os).await?;
         let valid_model_id = match model_id {
@@ -679,6 +712,7 @@ impl ChatSession {
             failed_request_ids: Vec::new(),
             pending_prompts: VecDeque::new(),
             interactive,
+            quiet,
             inner: Some(ChatState::default()),
             ctrlc_rx,
         })
@@ -1131,70 +1165,91 @@ impl ChatSession {
         }
     }
 
-    async fn spawn(&mut self, os: &mut Os) -> Result<()> {
-        let is_small_screen = self.terminal_width() < GREETING_BREAK_POINT;
-        if os
+    /// Display the greeting UI elements (banner, tips, shortcuts, separator)
+    fn display_greeting(&mut self, os: &Os, is_small_screen: bool) -> Result<()> {
+        if self.quiet {
+            return Ok(());
+        }
+
+        if !os
             .database
             .settings
             .get_bool(Setting::ChatGreetingEnabled)
             .unwrap_or(true)
         {
-            let welcome_text = match self.existing_conversation {
-                true => RESUME_TEXT,
-                false => match is_small_screen {
-                    true => SMALL_SCREEN_WELCOME_TEXT,
-                    false => WELCOME_TEXT,
-                },
-            };
+            return Ok(());
+        }
 
-            execute!(self.stderr, style::Print(welcome_text), style::Print("\n\n"),)?;
+        let welcome_text = match self.existing_conversation {
+            true => RESUME_TEXT,
+            false => match is_small_screen {
+                true => SMALL_SCREEN_WELCOME_TEXT,
+                false => WELCOME_TEXT,
+            },
+        };
 
-            let tip = ROTATING_TIPS[usize::try_from(rand::random::<u32>()).unwrap_or(0) % ROTATING_TIPS.len()];
-            if is_small_screen {
-                // If the screen is small, print the tip in a single line
-                execute!(
-                    self.stderr,
-                    style::Print("💡 ".to_string()),
-                    style::Print(tip),
-                    style::Print("\n")
-                )?;
-            } else {
-                draw_box(
-                    &mut self.stderr,
-                    "Did you know?",
-                    tip,
-                    GREETING_BREAK_POINT,
-                    Color::DarkGrey,
-                )?;
-            }
+        execute!(self.stderr, style::Print(welcome_text), style::Print("\n\n"),)?;
 
+        let tip = ROTATING_TIPS[usize::try_from(rand::random::<u32>()).unwrap_or(0) % ROTATING_TIPS.len()];
+        if is_small_screen {
+            // If the screen is small, print the tip in a single line
             execute!(
                 self.stderr,
-                style::Print("\n"),
-                style::Print(match is_small_screen {
-                    true => SMALL_SCREEN_POPULAR_SHORTCUTS,
-                    false => POPULAR_SHORTCUTS,
-                }),
-                style::Print("\n"),
-                style::Print(
-                    "━"
-                        .repeat(if is_small_screen { 0 } else { GREETING_BREAK_POINT })
-                        .dark_grey()
-                )
+                style::Print("💡 ".to_string()),
+                style::Print(tip),
+                style::Print("\n")
             )?;
-            execute!(self.stderr, style::Print("\n"), style::SetForegroundColor(Color::Reset))?;
+        } else {
+            draw_box(
+                &mut self.stderr,
+                "Did you know?",
+                tip,
+                GREETING_BREAK_POINT,
+                Color::DarkGrey,
+            )?;
         }
 
-        if self.all_tools_trusted() {
-            queue!(
-                self.stderr,
-                style::Print(format!(
-                    "{}{TRUST_ALL_TEXT}\n\n",
-                    if !is_small_screen { "\n" } else { "" }
-                ))
-            )?;
+        execute!(
+            self.stderr,
+            style::Print("\n"),
+            style::Print(match is_small_screen {
+                true => SMALL_SCREEN_POPULAR_SHORTCUTS,
+                false => POPULAR_SHORTCUTS,
+            }),
+            style::Print("\n"),
+            style::Print(
+                "━"
+                    .repeat(if is_small_screen { 0 } else { GREETING_BREAK_POINT })
+                    .dark_grey()
+            )
+        )?;
+        execute!(self.stderr, style::Print("\n"), style::SetForegroundColor(Color::Reset))?;
+
+        Ok(())
+    }
+
+    /// Display the trust all tools message
+    fn display_trust_message(&mut self, is_small_screen: bool) -> Result<()> {
+        if self.quiet || !self.all_tools_trusted() {
+            return Ok(());
         }
-        self.stderr.flush()?;
+
+        queue!(
+            self.stderr,
+            style::Print(format!(
+                "{}{TRUST_ALL_TEXT}\n\n",
+                if !is_small_screen { "\n" } else { "" }
+            ))
+        )?;
+
+        Ok(())
+    }
+
+    /// Display the model information
+    async fn display_model_info(&mut self, os: &Os) -> Result<()> {
+        if self.quiet {
+            return Ok(());
+        }
 
         if let Some(ref id) = self.conversation.model {
             let model_options = get_model_options(os).await?;
@@ -1208,6 +1263,22 @@ impl ChatSession {
                 )?;
             }
         }
+
+        Ok(())
+    }
+
+    async fn spawn(&mut self, os: &mut Os) -> Result<()> {
+        let is_small_screen = self.terminal_width() < GREETING_BREAK_POINT;
+
+        // Display UI elements (suppressed in quiet mode)
+        self.display_greeting(os, is_small_screen)?;
+        self.display_trust_message(is_small_screen)?;
+
+        if !self.quiet {
+            self.stderr.flush()?;
+        }
+
+        self.display_model_info(os).await?;
 
         if let Some(user_input) = self.initial_input.take() {
             self.inner = Some(ChatState::HandleInput { input: user_input });
@@ -1916,10 +1987,12 @@ impl ChatSession {
                 }
             }
 
-            let invoke_result = tool
-                .tool
-                .invoke(os, &mut self.stdout, &mut self.conversation.file_line_tracker)
-                .await;
+            let invoke_result = if self.quiet {
+                let mut null_stdout = std::io::sink();
+                tool.tool.invoke(os, &mut null_stdout, &mut self.conversation.file_line_tracker).await
+            } else {
+                tool.tool.invoke(os, &mut self.stdout, &mut self.conversation.file_line_tracker).await
+            };
 
             if self.spinner.is_some() {
                 queue!(
@@ -1965,16 +2038,18 @@ impl ChatSession {
                     }
 
                     debug!("tool result output: {:#?}", result);
-                    execute!(
-                        self.stdout,
-                        style::Print(CONTINUATION_LINE),
-                        style::Print("\n"),
-                        style::SetForegroundColor(Color::Green),
-                        style::SetAttribute(Attribute::Bold),
-                        style::Print(format!(" ● Completed in {}s", tool_time)),
-                        style::SetForegroundColor(Color::Reset),
-                        style::Print("\n\n"),
-                    )?;
+                    if !self.quiet {
+                        execute!(
+                            self.stdout,
+                            style::Print(CONTINUATION_LINE),
+                            style::Print("\n"),
+                            style::SetForegroundColor(Color::Green),
+                            style::SetAttribute(Attribute::Bold),
+                            style::Print(format!(" ● Completed in {}s", tool_time)),
+                            style::SetForegroundColor(Color::Reset),
+                            style::Print("\n\n"),
+                        )?;
+                    }
 
                     tool_telemetry = tool_telemetry.and_modify(|ev| ev.is_success = Some(true));
                     if let Tool::Custom(_) = &tool.tool {
@@ -2016,19 +2091,21 @@ impl ChatSession {
                 },
                 Err(err) => {
                     error!(?err, "An error occurred processing the tool");
-                    execute!(
-                        self.stderr,
-                        style::Print(CONTINUATION_LINE),
-                        style::Print("\n"),
-                        style::SetAttribute(Attribute::Bold),
-                        style::SetForegroundColor(Color::Red),
-                        style::Print(format!(" ● Execution failed after {}s:\n", tool_time)),
-                        style::SetAttribute(Attribute::Reset),
-                        style::SetForegroundColor(Color::Red),
-                        style::Print(&err),
-                        style::SetAttribute(Attribute::Reset),
-                        style::Print("\n\n"),
-                    )?;
+                    if !self.quiet {
+                        execute!(
+                            self.stderr,
+                            style::Print(CONTINUATION_LINE),
+                            style::Print("\n"),
+                            style::SetAttribute(Attribute::Bold),
+                            style::SetForegroundColor(Color::Red),
+                            style::Print(format!(" ● Execution failed after {}s:\n", tool_time)),
+                            style::SetAttribute(Attribute::Reset),
+                            style::SetForegroundColor(Color::Red),
+                            style::Print(&err),
+                            style::SetAttribute(Attribute::Reset),
+                            style::Print("\n\n"),
+                        )?;
+                    }
 
                     tool_telemetry.and_modify(|ev| {
                         ev.is_success = Some(false);
@@ -2135,7 +2212,7 @@ impl ChatSession {
                         },
                         parser::ResponseEvent::AssistantText(text) => {
                             // Add Q response prefix before the first assistant text.
-                            if !response_prefix_printed && !text.trim().is_empty() {
+                            if !self.quiet && !response_prefix_printed && !text.trim().is_empty() {
                                 queue!(
                                     self.stdout,
                                     style::SetForegroundColor(Color::Green),
@@ -2532,6 +2609,10 @@ impl ChatSession {
     }
 
     async fn print_tool_description(&mut self, os: &Os, tool_index: usize, trusted: bool) -> Result<(), ChatError> {
+        if self.quiet {
+            return Ok(());
+        }
+
         let tool_use = &self.tool_uses[tool_index];
 
         queue!(
@@ -2730,24 +2811,24 @@ impl ChatSession {
 
             os.telemetry
                 .send_record_user_turn_completion(&os.database, conversation_id, result, RecordUserTurnCompletionArgs {
-                    message_ids: mds.iter().map(|md| md.message_id.clone()).collect::<_>(),
-                    request_ids: mds.iter().map(|md| md.request_id.clone()).collect::<_>(),
-                    reason,
-                    reason_desc,
-                    status_code,
-                    time_to_first_chunks_ms: mds
-                        .iter()
-                        .map(|md| md.time_to_first_chunk.map(|d| d.as_secs_f64() * 1000.0))
-                        .collect::<_>(),
-                    chat_conversation_type: md.and_then(|md| md.chat_conversation_type),
-                    assistant_response_length: mds.iter().map(|md| md.response_size as i64).sum(),
-                    message_meta_tags: mds.last().map(|md| md.message_meta_tags.clone()).unwrap_or_default(),
-                    user_prompt_length: mds.first().map(|md| md.user_prompt_length).unwrap_or_default() as i64,
-                    user_turn_duration_seconds,
-                    follow_up_count: mds
-                        .iter()
-                        .filter(|md| matches!(md.chat_conversation_type, Some(ChatConversationType::ToolUse)))
-                        .count() as i64,
+                        message_ids: mds.iter().map(|md| md.message_id.clone()).collect::<_>(),
+                        request_ids: mds.iter().map(|md| md.request_id.clone()).collect::<_>(),
+                        reason,
+                        reason_desc,
+                        status_code,
+                        time_to_first_chunks_ms: mds
+                            .iter()
+                            .map(|md| md.time_to_first_chunk.map(|d| d.as_secs_f64() * 1000.0))
+                            .collect::<_>(),
+                        chat_conversation_type: md.and_then(|md| md.chat_conversation_type),
+                        assistant_response_length: mds.iter().map(|md| md.response_size as i64).sum(),
+                        message_meta_tags: mds.last().map(|md| md.message_meta_tags.clone()).unwrap_or_default(),
+                        user_prompt_length: mds.first().map(|md| md.user_prompt_length).unwrap_or_default() as i64,
+                        user_turn_duration_seconds,
+                        follow_up_count: mds
+                            .iter()
+                            .filter(|md| matches!(md.chat_conversation_type, Some(ChatConversationType::ToolUse)))
+                            .count() as i64,
                 })
                 .await
                 .ok();
