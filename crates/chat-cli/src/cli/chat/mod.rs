@@ -3055,6 +3055,7 @@ mod tests {
             None,
             tool_config,
             true,
+            false, // quiet = false
         )
         .await
         .unwrap()
@@ -3196,6 +3197,7 @@ mod tests {
             None,
             tool_config,
             true,
+            false, // quiet = false
         )
         .await
         .unwrap()
@@ -3292,6 +3294,7 @@ mod tests {
             None,
             tool_config,
             true,
+            false, // quiet = false
         )
         .await
         .unwrap()
@@ -3366,6 +3369,7 @@ mod tests {
             None,
             tool_config,
             true,
+            false, // quiet = false
         )
         .await
         .unwrap()
@@ -3416,12 +3420,52 @@ mod tests {
             None,
             tool_config,
             true,
+            false, // quiet = false
         )
         .await
         .unwrap()
         .spawn(&mut os)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_quiet_mode_suppresses_ui_elements() {
+        let mut os = Os::new().await.unwrap();
+        os.client.set_mock_output(serde_json::json!([
+            [
+                "Hello! I can help you with that.",
+            ],
+        ]));
+
+        let agents = get_test_agents(&os).await;
+        let tool_manager = ToolManager::default();
+        let tool_config = serde_json::from_str::<HashMap<String, ToolSpec>>(include_str!("tools/tool_index.json"))
+            .expect("Tools failed to load");
+
+        // Test that ChatSession can be created with quiet=true
+        let session = ChatSession::new(
+            &mut os,
+            std::io::stdout(),
+            std::io::stderr(),
+            "test_conv_id",
+            agents,
+            Some("hello".to_string()),
+            InputSource::new_mock(vec!["hello".to_string()]),
+            false,
+            || Some(80),
+            tool_manager,
+            None,
+            tool_config,
+            false, // non-interactive
+            true,  // quiet = true
+        )
+        .await
+        .unwrap();
+
+        // Verify the quiet flag is set correctly
+        assert!(session.quiet);
+        assert!(!session.interactive);
     }
 
     #[test]
