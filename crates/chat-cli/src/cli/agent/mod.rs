@@ -712,9 +712,9 @@ impl Agents {
             format!("* {}", "trusted".dark_green().bold())
         } else {
             // For custom agents, only show defaults if using the default agent
-            let is_default_agent = self.get_active()
-                .map(|a| a.name.as_str() == DEFAULT_AGENT_NAME)
-                .unwrap_or(false);
+            let is_default_agent = self
+                .get_active()
+                .is_some_and(|a| a.name.as_str() == DEFAULT_AGENT_NAME);
             
             if is_default_agent {
                 self.default_permission_label(tool_name)
