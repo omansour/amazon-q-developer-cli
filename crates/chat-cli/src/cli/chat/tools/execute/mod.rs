@@ -537,7 +537,7 @@ mod tests {
             "toolsSettings": {
                 "execute_bash": {
                     "allowedCommands": ["ls"],
-                    "deniedCommands": ["rm"],
+                    "deniedCommands": ["rm .*"],
                     "allowReadOnly": false
                 }
             }
@@ -574,7 +574,7 @@ mod tests {
             "toolsSettings": {
                 "execute_bash": {
                     "allowedCommands": ["git status", "ls.*"],
-                    "deniedCommands": ["rm"],
+                    "deniedCommands": ["rm .*"],
                     "allowReadOnly": true
                 }
             }
@@ -671,6 +671,5 @@ mod tests {
 
         // Should ask when settings are invalid (falls back to safe behavior)
         assert_eq!(cmd.eval_perm(&agent), PermissionEvalResult::Ask);
->>>>>>> 20b287db (fix: enhance execute tool permission logic for fine-grained command control)
     }
 }
